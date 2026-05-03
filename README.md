@@ -247,3 +247,9 @@ cd frontend && pnpm install && pnpm dev
 - ffmpeg (system-wide)
 - deno (for yt-dlp YouTube extraction)
 - NVIDIA GPU recommended for Whisper + Chatterbox inference
+
+## Note
+This project was tested on a computer with AMD graphics card.
+The Chatterbox container requires an NVIDIA card which was not available,
+thus the output videos do not show TTS dubbed audio, so the audio is silent on AMD setups.
+I have attached screenshot that shows all stages working except Diarize.
