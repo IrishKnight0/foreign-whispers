@@ -97,70 +97,80 @@ def analyze_failures(report: dict) -> FailureAnalysis:
 
 
 def get_shorter_translations(
+    # for spanish translations that are too long, this function generates shorter versions to help fit it in the english time window
     source_text: str,
     baseline_es: str,
     target_duration_s: float,
     context_prev: str = "",
     context_next: str = "",
 ) -> list[TranslationCandidate]:
-    """Return shorter translation candidates that fit *target_duration_s*.
-
-    .. admonition:: Student Assignment — Duration-Aware Translation Re-ranking
-
-       This function is intentionally a **stub that returns an empty list**.
-       Your task is to implement a strategy that produces shorter
-       target-language translations when the baseline translation is too long
-       for the time budget.
-
-       **Inputs**
-
-       ============== ======== ==================================================
-       Parameter      Type     Description
-       ============== ======== ==================================================
-       source_text    str      Original source-language segment text
-       baseline_es    str      Baseline target-language translation (from argostranslate)
-       target_duration_s float Time budget in seconds for this segment
-       context_prev   str      Text of the preceding segment (for coherence)
-       context_next   str      Text of the following segment (for coherence)
-       ============== ======== ==================================================
-
-       **Outputs**
-
-       A list of ``TranslationCandidate`` objects, sorted shortest first.
-       Each candidate has:
-
-       - ``text``: the shortened target-language translation
-       - ``char_count``: ``len(text)``
-       - ``brevity_rationale``: short note on what was changed
-
-       **Duration heuristic**: target-language TTS produces ~15 characters/second
-       (or ~4.5 syllables/second for Romance languages).  So a 3-second budget
-       ≈ 45 characters.
-
-       **Approaches to consider** (pick one or combine):
-
-       1. **Rule-based shortening** — strip filler words, use shorter synonyms
-          from a lookup table, contract common phrases
-          (e.g. "en este momento" → "ahora").
-       2. **Multiple translation backends** — call argostranslate with
-          paraphrased input, or use a second translation model, then pick
-          the shortest output that preserves meaning.
-       3. **LLM re-ranking** — use an LLM (e.g. via an API) to generate
-          condensed alternatives.  This was the previous approach but adds
-          latency, cost, and a runtime dependency.
-       4. **Hybrid** — rule-based first, fall back to LLM only for segments
-          that still exceed the budget.
-
-       **Evaluation criteria**: the caller selects the candidate whose
-       ``len(text) / 15.0`` is closest to ``target_duration_s``.
-
-    Returns:
-        Empty list (stub).  Implement to return ``TranslationCandidate`` items.
-    """
+    
     logger.info(
         "get_shorter_translations called for %.1fs budget (%d chars baseline) — "
         "returning empty list (student assignment stub).",
         target_duration_s,
         len(baseline_es),
     )
-    return []
+    target_chars = int(target_duration_s * 15)
+    candidates = []
+
+    filler_map = [
+        ("en este momento", "ahora"),
+        ("en realidad", "realmente"),
+        ("a pesar de que", "aunque"),
+        ("debido a que", "porque"),
+        ("con el fin de", "para"),
+        ("a causa de", "por"),
+        ("sin embargo", "pero"),
+        ("por lo tanto", "entonces"),
+        ("es decir", "o sea"),
+        ("a continuación", "luego"),
+        ("en primer lugar", "primero"),
+        ("en segundo lugar", "segundo"),
+        ("por otro lado", "además"),
+        ("de todas formas", "igual"),
+        ("en definitiva", "en fin"),
+    ]
+
+    result_t = baseline_es
+    used = []
+    for long_form, short_form in filler_map:
+        if long_form in result_t.lower():
+            result_t = result_t.lower().replace(long_form, short_form)
+            used.append(f"{long_form}→{short_form}")
+
+    if result_t != baseline_es and len(result_t) <= len(baseline_es):
+        candidates.append(TranslationCandidate(
+            text=result_t,
+            char_count=len(result_t),
+            brevity_rationale=f"Contracted phrases: {', '.join(used)}",
+        ))
+
+    if len(baseline_es) > target_chars:
+        words = baseline_es.split()
+        shortVer = ""
+        for word in words:
+            if len(shortVer) + len(word) + 1 <= target_chars:
+                shortVer += (" " if shortVer else "") + word
+            else:
+                break
+        if shortVer and shortVer != baseline_es:
+            candidates.append(TranslationCandidate(
+                text=shortVer,
+                char_count=len(shortVer),
+                brevity_rationale="Truncated to word boundary within duration budget",
+            ))
+
+    import re
+
+    cleaned = re.sub(r'\([^)]*\)', '', baseline_es).strip()
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    if cleaned != baseline_es and len(cleaned) > 0:
+        candidates.append(TranslationCandidate(
+            text=cleaned,
+            char_count=len(cleaned),
+            brevity_rationale="Removed parenthetical clauses",
+        ))
+
+    candidates.sort(key=lambda c: c.char_count)
+    return candidates

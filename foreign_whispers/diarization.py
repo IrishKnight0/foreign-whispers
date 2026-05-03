@@ -13,6 +13,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+
 def diarize_audio(audio_path: str, hf_token: str | None = None) -> list[dict]:
     """Return speaker-labeled intervals for *audio_path*.
 
@@ -43,3 +44,32 @@ def diarize_audio(audio_path: str, hf_token: str | None = None) -> list[dict]:
     except Exception as exc:
         logger.warning("Diarization failed for %s: %s", audio_path, exc)
         return []
+
+
+def assign_speakers(
+    # this function figures out which speaker said each text segment
+    segments: list[dict],
+    diarization: list[dict],
+) -> list[dict]:
+    result = []
+    for seg in segments:
+        
+        new_segment = seg.copy()
+        seg_start = seg["start"]
+        seg_end = seg["end"]
+        
+        matched_speaker = "SPEAKER_00"
+        good_overlap = 0.0
+        
+        for d in diarization:
+            overlap = max(0, min(seg_end, d["end_s"]) - max(seg_start, d["start_s"]))
+
+            if overlap > good_overlap:
+                good_overlap = overlap
+                matched_speaker = d["speaker"]
+        
+        new_segment["speaker"] =  matched_speaker
+
+        result.append(new_segment)
+    
+    return result

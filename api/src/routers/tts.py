@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from api.src.core.config import settings
 from api.src.core.dependencies import resolve_title
 from api.src.services.tts_service import TTSService
+from foreign_whispers.voice_resolution import resolve_speaker_wav
 
 router = APIRouter(prefix="/api")
 
@@ -27,12 +28,10 @@ async def tts_endpoint(
     request: Request,
     config: str = Query(..., pattern=r"^c-[0-9a-f]{7}$"),
     alignment: bool = Query(False),
+    speaker_wav: str = Query(None, description="Reference voice WAV path (e.g. 'es/default.wav')"),
+    # added this to build a mapping of speaker to voice, so different speakers get different voices
 ):
-    """Generate TTS audio for a translated transcript.
-
-    *config* is an opaque directory name for caching.
-    *alignment* enables temporal alignment (clamped stretch).
-    """
+    """Generate TTS audio for a translated transcript."""
     trans_dir = settings.translations_dir
     audio_dir = settings.tts_audio_dir / config
     audio_dir.mkdir(parents=True, exist_ok=True)
@@ -55,17 +54,30 @@ async def tts_endpoint(
             "config": config,
         }
 
+    # Load translated transcript to get speaker labels
+    trans_path = settings.translations_dir / f"{title}.json"
+    translated = json.loads(trans_path.read_text())
+    segments = translated.get("segments", [])
+
+    # Build speaker → voice mapping
+    allspeakers = sorted(set(seg.get("speaker", "SPEAKER_00") for seg in segments))
+    voice_map = {
+        spk: resolve_speaker_wav(settings.speakers_dir, "es", spk)
+        for spk in allspeakers
+    }
+
+    # Fall back to single speaker_wav if no diarization
+    if speaker_wav is None:
+        speaker_wav = resolve_speaker_wav(settings.speakers_dir, "es")
+
     source_path = str(trans_dir / f"{title}.json")
 
     await _run_in_threadpool(
-        None, svc.text_file_to_speech, source_path, str(audio_dir), alignment=alignment
+        None, svc.text_file_to_speech, source_path, str(audio_dir),
+        alignment=alignment,
+        speaker_wav=speaker_wav,
+        speaker_voice_map=voice_map if len(allspeakers) > 1 else None,
     )
-
-    return {
-        "video_id": video_id,
-        "audio_path": str(wav_path),
-        "config": config,
-    }
 
 
 @router.get("/audio/{video_id}")

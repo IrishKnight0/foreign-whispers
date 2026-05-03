@@ -34,11 +34,24 @@ def _count_syllables(text: str) -> int:
 
 
 _SYLLABLE_RATE = 4.5  # syllables per second for Romance languages
+_PAUSE_P_WORD = 0.06  # estimated pause between words in seconds
+_SENTENCEPAUSE = 0.15  # extra pause for sentence-ending punctuation
 
 
 def _estimate_duration(text: str) -> float:
-    """Estimate TTS duration in seconds using a syllable-rate heuristic."""
-    return _count_syllables(text) / _SYLLABLE_RATE
+    if not text.strip():
+        return 0.0
+
+    syllables = _count_syllables(text)
+    speech_duration = syllables / _SYLLABLE_RATE
+
+    word_count = len(text.split())
+    pause_duration = max(0, word_count - 1) *  _PAUSE_P_WORD
+
+    sentence_endings = len(re.findall(r'[.!?;,]', text))
+    sentence_pause = sentence_endings * _SENTENCEPAUSE
+
+    return speech_duration + pause_duration + sentence_pause
 
 
 @dataclasses.dataclass
@@ -293,6 +306,100 @@ def global_align(
             action          = action,
             gap_shift_s     = gap_shift,
             stretch_factor  = stretch,
+        ))
+
+        cumulative_drift += gap_shift
+
+    return aligned
+
+def global_align_dp(
+    # added this function as a better alternative to the greedy scheduler
+    metrics:         list[SegmentMetrics],
+    silence_regions: list[dict],
+    max_stretch:     float = 1.4,
+) -> list[AlignedSegment]:
+
+
+
+    def _silence_after(end_s: float) -> float:
+        
+        for r in silence_regions:
+            if r.get("label") == "silence" and r["start_s"] >= end_s - 0.1:
+                return r["end_s"] - r["start_s"]
+        return 0.0
+
+    def _penalty(stretch: float, action: AlignAction) -> float:
+        base = stretch ** 2
+        if action in (AlignAction.FAIL, AlignAction.REQUEST_SHORTER):
+            return base + 10.0
+        return base
+
+    n = len(metrics)
+    if n == 0:
+        return []
+
+
+    best_drift = [float("inf")] * n
+    use_gap = [False] * n
+
+
+
+
+    cumulative = 0.0
+    for i, m in enumerate(metrics):
+        gap = _silence_after(m.source_end)
+
+        action_a = decide_action(m, available_gap_s=0.0)
+        drift1 = cumulative
+        
+        penalty1 = _penalty(m.predicted_stretch, action_a)
+
+        action_b = decide_action(m, available_gap_s=gap)
+        drift2 = cumulative + (m.overflow_s if action_b == AlignAction.GAP_SHIFT else 0.0)
+        penalty2 = _penalty(
+            m.predicted_stretch if action_b != AlignAction.GAP_SHIFT else 1.0,
+            action_b
+        )
+
+        if penalty2 < penalty1 or (penalty2 == penalty1 and drift2 <= drift1):
+            best_drift[i] = drift2
+            use_gap[i] = (action_b == AlignAction.GAP_SHIFT)
+            cumulative = drift2
+        else:
+            best_drift[i] = drift1
+            use_gap[i] = False
+            cumulative = drift1
+
+    aligned = []
+    cumulative_drift = 0.0
+
+
+
+    for i, m in enumerate(metrics):
+        gap = _silence_after(m.source_end)
+        action = decide_action(m, available_gap_s=gap if use_gap[i] else 0.0)
+
+        gap_shift = 0.0
+        stretch = 1.0
+
+        if action == AlignAction.GAP_SHIFT and use_gap[i]:
+            gap_shift = m.overflow_s
+        elif action == AlignAction.MILD_STRETCH:
+            stretch = min(m.predicted_stretch, max_stretch)
+
+        sched_start = m.source_start + cumulative_drift
+        sched_end = sched_start + m.source_duration_s + gap_shift
+
+        aligned.append(AlignedSegment(
+            index=m.index,
+            original_start=m.source_start,
+            original_end=m.source_end,
+            scheduled_start=sched_start,
+            scheduled_end=sched_end,
+            text=m.translated_text,
+            action=action,
+            gap_shift_s=gap_shift,
+            stretch_factor=stretch,
         ))
 
         cumulative_drift += gap_shift
